@@ -13,67 +13,48 @@ function warn(...args) {
 log("content.js loaded", location.href);
 
 // =====================
-// 字幕取得
+// Injected Script → Content Script 通信
 // =====================
 
-function extractCaptionTracks(html) {
-  // 1) 素直な形
-  let m = html.match(/"captionTracks":(\[.*?\])/);
-  if (m) {
-    try { return JSON.parse(m[1]); } catch (e) { warn("JSON parse失敗(1)", e); }
-  }
-  // 2) 念のためエスケープされた形
-  m = html.match(/\\"captionTracks\\":(\[.*?\])/);
-  if (m) {
-    try {
-      const unescaped = m[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-      return JSON.parse(unescaped);
-    } catch (e) { warn("JSON parse失敗(2)", e); }
-  }
-  return null;
+function injectScript() {
+  const old = document.getElementById('yt-shadowing-injected');
+  if (old) old.remove();
+
+  const script = document.createElement('script');
+  script.id = 'yt-shadowing-injected';
+  script.setAttribute('type', 'text/javascript');
+  script.setAttribute('src', chrome.runtime.getURL('injected-script.js') + '?t=' + Date.now());
+  (document.body || document.documentElement).appendChild(script);
+  log("injected script inserted");
 }
 
-async function fetchCaptions(videoId) {
-  // まず現在ページのHTMLから取得を試みる（fetch不要・確実）
-  let tracks = extractCaptionTracks(document.documentElement.outerHTML);
+// injected script から字幕データを受け取る
+let captionResult = null; // { phrases, trackLang, availableTracks } or null
 
-  // ダメなら改めてページをfetch
-  if (!tracks) {
-    log("DOMにcaptionTracks無し。fetchで取得を試行");
-    try {
-      const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-      const html = await res.text();
-      tracks = extractCaptionTracks(html);
-    } catch (e) {
-      warn("ページfetch失敗", e);
-    }
+window.addEventListener('message', function(event) {
+  if (event.source !== window) return;
+  if (event.data && event.data.type === 'YOUTUBE_CAPTIONS_RESULT') {
+    log('Received captions result:', event.data.phrases ? event.data.phrases.length + ' phrases' : event.data.error);
+    captionResult = event.data;
   }
+});
 
-  if (!tracks || tracks.length === 0) {
-    warn("captionTracks見つからず");
+// =====================
+// 字幕取得（injected scriptの結果を待つ）
+// =====================
+
+async function waitForCaptions() {
+  let attempts = 0;
+  const maxAttempts = 150; // 15 seconds max
+  while (captionResult === null && attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    attempts++;
+  }
+  if (!captionResult || !captionResult.phrases || captionResult.phrases.length === 0) {
+    warn("No captions received:", captionResult ? captionResult.error : 'timeout');
     return null;
   }
-  log("captionTracks:", tracks.map((t) => t.languageCode));
-
-  const track = tracks.find((t) => t.languageCode === "en") || tracks[0];
-  if (!track || !track.baseUrl) return null;
-
-  try {
-    const xmlRes = await fetch(track.baseUrl + "&fmt=json3");
-    const data = await xmlRes.json();
-    return data.events
-      .filter((e) => e.segs)
-      .map((e) => ({
-        start: e.tStartMs / 1000,
-        duration: (e.dDurationMs || 0) / 1000,
-        end: (e.tStartMs + (e.dDurationMs || 0)) / 1000,
-        text: e.segs.map((s) => s.utf8 || "").join("").replace(/\n/g, " ").trim(),
-      }))
-      .filter((e) => e.text);
-  } catch (e) {
-    warn("字幕本体fetch失敗", e);
-    return null;
-  }
+  return captionResult.phrases;
 }
 
 // =====================
@@ -152,7 +133,7 @@ let currentPhrase = null;
 let phraseTimer = null;
 
 function selectPhrase(index, phrases, itemEl) {
-  document.querySelectorAll(".yts-phrase-item").forEach((el) =>
+  document.querySelectorAll(".yts-phrase-item").forEach(el =>
     el.classList.remove("active")
   );
   itemEl.classList.add("active");
@@ -175,7 +156,7 @@ function playPhrase(phrase) {
   video.currentTime = phrase.start;
   const p = video.play();
   if (p && typeof p.catch === "function") {
-    p.catch((err) => warn("play失敗", err));
+    p.catch(err => warn("play failed:", err));
   }
 
   phraseTimer = setTimeout(() => {
@@ -193,46 +174,70 @@ function formatTime(sec) {
 // 初期化
 // =====================
 
+let initInProgress = false;
+
 async function init() {
+  if (initInProgress) {
+    log("init already in progress, skipping");
+    return;
+  }
+  initInProgress = true;
+
   log("init called");
   const urlParams = new URLSearchParams(window.location.search);
   const videoId = urlParams.get("v");
   if (!videoId) {
-    log("video id無し");
+    log("no video id");
+    initInProgress = false;
     return;
   }
   log("videoId:", videoId);
 
-  // まずパネルを出す（ローディング状態）
+  // Reset for new video
+  captionResult = null;
+
+  // Inject script to fetch captions in page context
+  injectScript();
+
+  // Show loading
   buildPanel([], "字幕を取得中…");
 
   let phrases = null;
   try {
-    phrases = await fetchCaptions(videoId);
+    phrases = await waitForCaptions();
   } catch (e) {
-    warn("fetchCaptions例外", e);
+    warn("waitForCaptions exception:", e);
   }
 
   if (!phrases || phrases.length === 0) {
     buildPanel([], "この動画には字幕が見つかりませんでした");
+    initInProgress = false;
     return;
   }
 
-  log("phrases取得:", phrases.length);
+  log("phrases loaded:", phrases.length);
   buildPanel(phrases);
   if (typeof initRecorder === "function") {
     initRecorder();
   } else {
-    warn("initRecorderが未定義");
+    warn("initRecorder is not defined");
   }
+
+  initInProgress = false;
 }
 
+// =====================
 // ページ遷移対応（YouTubeはSPA）
-let lastUrl = "";
+// =====================
+
+let lastVideoId = "";
+
 function checkUrl() {
-  const currentUrl = location.href;
-  if (currentUrl !== lastUrl && currentUrl.includes("/watch")) {
-    lastUrl = currentUrl;
+  if (!location.href.includes("/watch")) return;
+  const urlParams = new URLSearchParams(window.location.search);
+  const videoId = urlParams.get("v");
+  if (videoId && videoId !== lastVideoId) {
+    lastVideoId = videoId;
     setTimeout(init, 1500);
   }
 }
@@ -243,8 +248,14 @@ observer.observe(document.body || document.documentElement, {
   subtree: true,
 });
 
+window.addEventListener('yt-navigate-finish', () => {
+  log("yt-navigate-finish event");
+  checkUrl();
+});
+
 // 初回実行
 if (location.href.includes("/watch")) {
-  lastUrl = location.href;
+  const urlParams = new URLSearchParams(window.location.search);
+  lastVideoId = urlParams.get("v") || "";
   setTimeout(init, 1500);
 }

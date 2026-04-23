@@ -10,12 +10,18 @@
   "host_permissions": [
     "https://www.youtube.com/*"
   ],
-  "content_scripts": [
-    {
-      "matches": ["https://www.youtube.com/watch*"],
-      "js": ["content.js", "recorder.js"],
-      "css": ["panel.css"],
-      "run_at": "document_idle"
-    }
-  ]
-}
+      "content_scripts": [
+      {
+        "matches": ["https://www.youtube.com/watch*"],
+        "js": ["content.js", "recorder.js"],
+        "css": ["panel.css"],
+        "run_at": "document_idle"
+      }
+    ],
+    "web_accessible_resources": [
+      {
+        "resources": ["injected-script.js"],
+        "matches": ["https://www.youtube.com/*"]
+      }
+    ]
+  }
