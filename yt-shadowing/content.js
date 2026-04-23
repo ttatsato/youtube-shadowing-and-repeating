@@ -36,9 +36,13 @@ async function fetchCaptions(videoId) {
 // =====================
 // YouTubeプレイヤー取得
 // =====================
+// Content Scriptは分離ワールドで動くため、#movie_playerに付いている
+// YouTube独自メソッド（seekTo/playVideo等）は呼べない。
+// 代わりに標準の<video>要素を直接操作する。
 
-function getPlayer() {
-  return document.querySelector("#movie_player");
+function getVideo() {
+  return document.querySelector("video.html5-main-video") ||
+    document.querySelector("video");
 }
 
 // =====================
@@ -118,16 +122,22 @@ function selectPhrase(index, phrases, itemEl) {
 }
 
 function playPhrase(phrase) {
-  const player = getPlayer();
-  if (!player) return;
+  const video = getVideo();
+  if (!video) {
+    console.warn("YT Shadowing: video要素が見つかりません");
+    return;
+  }
 
   clearTimeout(phraseTimer);
-  player.seekTo(phrase.start, true);
-  player.playVideo();
+  video.currentTime = phrase.start;
+  const p = video.play();
+  if (p && typeof p.catch === "function") {
+    p.catch((err) => console.warn("YT Shadowing: play失敗", err));
+  }
 
   // 終端で自動停止
   phraseTimer = setTimeout(() => {
-    player.pauseVideo();
+    video.pause();
   }, phrase.duration * 1000);
 }
 
