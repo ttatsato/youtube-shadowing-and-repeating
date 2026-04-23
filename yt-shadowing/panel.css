@@ -206,6 +206,40 @@
   background: #442222;
 }
 
+/* リピーティングモード */
+
+#yts-repeat-mode {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #1a5c1a;
+  color: #fff;
+  font-size: 13px;
+  font-weight: bold;
+  transition: background 0.15s;
+}
+
+#yts-repeat-mode:hover {
+  background: #237023;
+}
+
+#yts-repeat-mode.active {
+  background: #cc0000;
+}
+
+#yts-repeat-mode.active:hover {
+  background: #aa0000;
+}
+
+#yts-step-indicator {
+  font-size: 12px;
+  color: #ffca28;
+  min-height: 18px;
+  line-height: 1.5;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

@@ -69,13 +69,8 @@ function getVideo() {
 // 単語・タイミング管理
 // =====================
 
-// rawPhrases: 元の字幕フレーズ（変更しない）
-// allWords: 全単語をフラットにしたもの（各単語にタイムスタンプ付き）
-// splitPoints: Set<number> 区切り位置（単語インデックス。その単語の前で区切る）
-// activePhrases: splitPointsから生成された現在のフレーズ配列
-
 let rawPhrases = [];
-let allWords = [];    // [{ text, start, end }]
+let allWords = [];
 let splitPoints = new Set();
 let activePhrases = [];
 
@@ -117,7 +112,6 @@ function rebuildPhrases() {
   }
 
   const sortedSplits = [0, ...Array.from(splitPoints).sort((a, b) => a - b)];
-  // 0が重複しないように
   const unique = [...new Set(sortedSplits)];
 
   activePhrases = [];
@@ -159,18 +153,23 @@ function buildPanel(phrases, statusMessage) {
     <div id="yts-split-editor" style="display:none"></div>
     <div id="yts-controls">
       <div id="yts-current-phrase">フレーズを選択してください</div>
+      <div id="yts-step-indicator"></div>
       <div id="yts-buttons">
         <button id="yts-replay">▶ 再生</button>
         <button id="yts-record">⏺ 録音</button>
         <button id="yts-play-rec" disabled>🔊 録音再生</button>
       </div>
+      <button id="yts-repeat-mode">🔁 リピーティング開始</button>
     </div>
   `;
 
   document.body.appendChild(panel);
   log("panel appended");
 
-  document.getElementById("yts-close").onclick = () => panel.remove();
+  document.getElementById("yts-close").onclick = () => {
+    stopRepeatingMode();
+    panel.remove();
+  };
 
   const statusEl = document.getElementById("yts-status");
   if (statusMessage) {
@@ -178,12 +177,13 @@ function buildPanel(phrases, statusMessage) {
     statusEl.style.display = "block";
   }
 
-  // 編集ボタン（フレーズがある時だけ有効）
   const editBtn = document.getElementById("yts-edit");
   if (phrases.length === 0) {
     editBtn.style.display = "none";
+    document.getElementById("yts-repeat-mode").style.display = "none";
   } else {
     editBtn.onclick = () => openSplitEditor();
+    document.getElementById("yts-repeat-mode").onclick = () => toggleRepeatingMode();
   }
 
   renderPhraseList(phrases);
@@ -208,7 +208,11 @@ function renderPhraseList(phrases) {
     `;
     item.querySelector(".yts-time").textContent = formatTime(phrase.start);
     item.querySelector(".yts-text").textContent = phrase.text;
-    item.onclick = () => selectPhrase(i, phrases, item);
+    item.onclick = () => {
+      if (!repeatingActive) {
+        selectPhrase(i, phrases, item);
+      }
+    };
     list.appendChild(item);
   });
 }
@@ -218,6 +222,7 @@ function renderPhraseList(phrases) {
 // =====================
 
 function openSplitEditor() {
+  if (repeatingActive) return;
   const list = document.getElementById("yts-phrase-list");
   const editor = document.getElementById("yts-split-editor");
   const editBtn = document.getElementById("yts-edit");
@@ -248,7 +253,6 @@ function closeSplitEditor() {
   editBtn.title = "区切り編集";
   editBtn.onclick = () => openSplitEditor();
 
-  // フレーズを再構築して表示更新
   rebuildPhrases();
   renderPhraseList(activePhrases);
   currentPhrase = null;
@@ -273,7 +277,6 @@ function renderSplitEditor() {
   wordContainer.className = "yts-word-container";
 
   allWords.forEach((word, i) => {
-    // 区切りマーカー（最初の単語の前には表示しない）
     if (i > 0) {
       const splitter = document.createElement("span");
       splitter.className = "yts-splitter";
@@ -304,7 +307,7 @@ function renderSplitEditor() {
 }
 
 // =====================
-// フレーズ再生
+// フレーズ再生（Promise版）
 // =====================
 
 let currentPhrase = null;
@@ -315,7 +318,7 @@ function selectPhrase(index, phrases, itemEl) {
   document.querySelectorAll(".yts-phrase-item").forEach(el =>
     el.classList.remove("active")
   );
-  itemEl.classList.add("active");
+  if (itemEl) itemEl.classList.add("active");
 
   currentPhrase = phrases[index];
   currentPhraseIndex = index;
@@ -325,33 +328,292 @@ function selectPhrase(index, phrases, itemEl) {
   if (typeof updatePlayRecBtn === "function") {
     updatePlayRecBtn();
   }
+}
 
-  playPhrase(currentPhrase);
+// playPhraseAsync: フレーズ再生が終わるまで待てるPromise版
+function playPhraseAsync(phrase) {
+  return new Promise((resolve) => {
+    const video = getVideo();
+    if (!video) {
+      warn("video要素が見つかりません");
+      resolve();
+      return;
+    }
+
+    clearTimeout(phraseTimer);
+    video.currentTime = phrase.start;
+    const p = video.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(err => warn("play failed:", err));
+    }
+
+    const dur = Math.max(phrase.duration, 0.5) * 1000;
+    phraseTimer = setTimeout(() => {
+      video.pause();
+      resolve();
+    }, dur);
+  });
 }
 
 function playPhrase(phrase) {
-  const video = getVideo();
-  if (!video) {
-    warn("video要素が見つかりません");
-    return;
-  }
-
-  clearTimeout(phraseTimer);
-  video.currentTime = phrase.start;
-  const p = video.play();
-  if (p && typeof p.catch === "function") {
-    p.catch(err => warn("play failed:", err));
-  }
-
-  phraseTimer = setTimeout(() => {
-    video.pause();
-  }, Math.max(phrase.duration, 0.5) * 1000);
+  playPhraseAsync(phrase);
 }
 
 function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function setStepIndicator(text) {
+  const el = document.getElementById("yts-step-indicator");
+  if (el) el.textContent = text;
+}
+
+function highlightPhraseItem(index) {
+  document.querySelectorAll(".yts-phrase-item").forEach(el =>
+    el.classList.remove("active")
+  );
+  const item = document.querySelector(`.yts-phrase-item[data-index="${index}"]`);
+  if (item) {
+    item.classList.add("active");
+    item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+}
+
+// =====================
+// リピーティングモード
+// =====================
+
+let repeatingActive = false;
+let repeatingAbort = false;
+
+function toggleRepeatingMode() {
+  if (repeatingActive) {
+    stopRepeatingMode();
+  } else {
+    startRepeatingMode();
+  }
+}
+
+function stopRepeatingMode() {
+  repeatingActive = false;
+  repeatingAbort = true;
+  clearTimeout(phraseTimer);
+
+  // 録音中なら停止
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+
+  const btn = document.getElementById("yts-repeat-mode");
+  if (btn) {
+    btn.textContent = "🔁 リピーティング開始";
+    btn.classList.remove("active");
+  }
+
+  const recordBtn = document.getElementById("yts-record");
+  if (recordBtn) {
+    recordBtn.textContent = "⏺ 録音";
+    recordBtn.classList.remove("recording");
+    recordBtn.disabled = false;
+  }
+
+  setStepIndicator("");
+  log("repeating mode stopped");
+}
+
+async function startRepeatingMode() {
+  if (activePhrases.length === 0) return;
+
+  repeatingActive = true;
+  repeatingAbort = false;
+
+  const btn = document.getElementById("yts-repeat-mode");
+  if (btn) {
+    btn.textContent = "⏹ リピーティング停止";
+    btn.classList.add("active");
+  }
+
+  // 編集・手動操作ボタンを無効化
+  const editBtn = document.getElementById("yts-edit");
+  if (editBtn) editBtn.disabled = true;
+
+  log("repeating mode started");
+
+  const startIndex = (currentPhraseIndex !== null && currentPhraseIndex >= 0)
+    ? currentPhraseIndex : 0;
+
+  for (let i = startIndex; i < activePhrases.length; i++) {
+    if (repeatingAbort) break;
+
+    const phrase = activePhrases[i];
+    currentPhrase = phrase;
+    currentPhraseIndex = i;
+    highlightPhraseItem(i);
+    document.getElementById("yts-current-phrase").textContent = phrase.text;
+
+    if (typeof updatePlayRecBtn === "function") updatePlayRecBtn();
+
+    // ステップ1: 1回目再生
+    setStepIndicator("🔊 1回目の再生");
+    await playPhraseAsync(phrase);
+    if (repeatingAbort) break;
+
+    // 間を少し空ける
+    await sleep(500);
+    if (repeatingAbort) break;
+
+    // ステップ2: 2回目再生
+    setStepIndicator("🔊 2回目の再生");
+    await playPhraseAsync(phrase);
+    if (repeatingAbort) break;
+
+    await sleep(500);
+    if (repeatingAbort) break;
+
+    // ステップ3: 録音
+    setStepIndicator("⏺ 録音中… (クリックで停止)");
+    const recorded = await autoRecord(i, phrase.duration);
+    if (repeatingAbort) break;
+
+    // ステップ4: 録音再生
+    if (recorded) {
+      await sleep(300);
+      if (repeatingAbort) break;
+      setStepIndicator("🔊 録音を再生中");
+      await autoPlayRecording(i);
+      if (repeatingAbort) break;
+    }
+
+    // 次のフレーズへ（少し間を空ける）
+    await sleep(800);
+  }
+
+  // 完了
+  if (!repeatingAbort) {
+    setStepIndicator("✅ 完了！");
+    setTimeout(() => setStepIndicator(""), 2000);
+  }
+
+  if (editBtn) editBtn.disabled = false;
+  repeatingActive = false;
+
+  if (btn) {
+    btn.textContent = "🔁 リピーティング開始";
+    btn.classList.remove("active");
+  }
+
+  log("repeating mode finished");
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 自動録音: フレーズの長さ + 余裕分だけ録音して自動停止
+// ユーザーが手動で停止することも可能
+function autoRecord(phraseIndex, phraseDuration) {
+  return new Promise(async (resolve) => {
+    if (repeatingAbort) { resolve(false); return; }
+
+    const recordBtn = document.getElementById("yts-record");
+    const playRecBtn = document.getElementById("yts-play-rec");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      const captureIndex = phraseIndex;
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+
+      let resolved = false;
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        if (phraseRecordings[captureIndex]) {
+          URL.revokeObjectURL(phraseRecordings[captureIndex]);
+        }
+        phraseRecordings[captureIndex] = URL.createObjectURL(blob);
+        stream.getTracks().forEach(t => t.stop());
+        markRecorded(captureIndex);
+
+        if (recordBtn) {
+          recordBtn.textContent = "⏺ 録音";
+          recordBtn.classList.remove("recording");
+        }
+        if (playRecBtn) playRecBtn.disabled = false;
+
+        if (!resolved) { resolved = true; resolve(true); }
+      };
+
+      mediaRecorder.start();
+      if (recordBtn) {
+        recordBtn.textContent = "⏹ 停止";
+        recordBtn.classList.add("recording");
+      }
+
+      // 手動停止用: 録音ボタンクリックで停止
+      const manualStop = () => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      };
+      if (recordBtn) recordBtn.onclick = manualStop;
+
+      // 自動停止: フレーズの長さ + 1.5秒の余裕
+      const autoStopMs = Math.max(phraseDuration, 0.5) * 1000 + 1500;
+      const autoTimer = setTimeout(() => {
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+          mediaRecorder.stop();
+        }
+      }, autoStopMs);
+
+      // abort対応
+      const checkAbort = setInterval(() => {
+        if (repeatingAbort && mediaRecorder && mediaRecorder.state === "recording") {
+          clearTimeout(autoTimer);
+          clearInterval(checkAbort);
+          mediaRecorder.stop();
+        }
+      }, 100);
+
+      // onstopで解決されるので、タイマーのクリーンアップだけ
+      mediaRecorder.addEventListener('stop', () => {
+        clearTimeout(autoTimer);
+        clearInterval(checkAbort);
+      }, { once: true });
+
+    } catch (err) {
+      warn("autoRecord mic error:", err);
+      resolve(false);
+    }
+  });
+}
+
+// 録音した音声を再生して完了を待つ
+function autoPlayRecording(phraseIndex) {
+  return new Promise((resolve) => {
+    const url = phraseRecordings[phraseIndex];
+    if (!url) { resolve(); return; }
+
+    const audio = new Audio(url);
+    audio.onended = () => resolve();
+    audio.onerror = () => resolve();
+    audio.play().catch(() => resolve());
+
+    // abort対応
+    const checkAbort = setInterval(() => {
+      if (repeatingAbort) {
+        clearInterval(checkAbort);
+        audio.pause();
+        resolve();
+      }
+    }, 100);
+    audio.addEventListener('ended', () => clearInterval(checkAbort), { once: true });
+  });
 }
 
 // =====================
@@ -366,6 +628,7 @@ async function init() {
     return;
   }
   initInProgress = true;
+  stopRepeatingMode();
 
   log("init called");
   const urlParams = new URLSearchParams(window.location.search);
@@ -397,7 +660,6 @@ async function init() {
 
   log("phrases loaded:", phrases.length);
 
-  // 単語データと区切りを初期化
   rawPhrases = phrases;
   allWords = buildWords(phrases);
   splitPoints = buildDefaultSplitPoints(phrases);
