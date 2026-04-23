@@ -130,6 +130,7 @@ function buildPanel(phrases, statusMessage) {
 // =====================
 
 let currentPhrase = null;
+let currentPhraseIndex = null;
 let phraseTimer = null;
 
 function selectPhrase(index, phrases, itemEl) {
@@ -139,8 +140,14 @@ function selectPhrase(index, phrases, itemEl) {
   itemEl.classList.add("active");
 
   currentPhrase = phrases[index];
+  currentPhraseIndex = index;
   document.getElementById("yts-current-phrase").textContent =
     currentPhrase.text;
+
+  // 録音再生ボタンの状態を更新
+  if (typeof updatePlayRecBtn === "function") {
+    updatePlayRecBtn();
+  }
 
   playPhrase(currentPhrase);
 }
