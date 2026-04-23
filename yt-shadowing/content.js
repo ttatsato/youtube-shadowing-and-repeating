@@ -706,7 +706,73 @@ async function init() {
     warn("initRecorder is not defined");
   }
 
+  // 動画再生に合わせてフレーズを自動追跡
+  setupTimeTracking();
+
   initInProgress = false;
+}
+
+// =====================
+// 再生時間に連動するフレーズ追跡
+// =====================
+
+let timeTrackingCleanup = null;
+
+function setupTimeTracking() {
+  // 前回のリスナーをクリーンアップ
+  if (timeTrackingCleanup) {
+    timeTrackingCleanup();
+    timeTrackingCleanup = null;
+  }
+
+  const video = getVideo();
+  if (!video) return;
+
+  let lastTrackedIndex = -1;
+
+  const onTimeUpdate = () => {
+    // リピーティングモード中は干渉しない
+    if (repeatingActive) return;
+    if (activePhrases.length === 0) return;
+
+    const t = video.currentTime;
+
+    // 現在の時間に該当するフレーズを探す
+    let matchIndex = -1;
+    for (let i = 0; i < activePhrases.length; i++) {
+      if (t >= activePhrases[i].start && t < activePhrases[i].end) {
+        matchIndex = i;
+        break;
+      }
+    }
+    // 該当なしの場合、一番近い次のフレーズの直前かチェック
+    if (matchIndex === -1) {
+      for (let i = 0; i < activePhrases.length; i++) {
+        if (t < activePhrases[i].start) {
+          // 前のフレーズの end と次の start の間 → 前のフレーズをハイライト
+          if (i > 0) matchIndex = i - 1;
+          break;
+        }
+      }
+      // 全フレーズより後 → 最後のフレーズ
+      if (matchIndex === -1 && t >= activePhrases[activePhrases.length - 1].start) {
+        matchIndex = activePhrases.length - 1;
+      }
+    }
+
+    if (matchIndex >= 0 && matchIndex !== lastTrackedIndex) {
+      lastTrackedIndex = matchIndex;
+      currentPhrase = activePhrases[matchIndex];
+      currentPhraseIndex = matchIndex;
+      highlightPhraseItem(matchIndex);
+    }
+  };
+
+  video.addEventListener("timeupdate", onTimeUpdate);
+
+  timeTrackingCleanup = () => {
+    video.removeEventListener("timeupdate", onTimeUpdate);
+  };
 }
 
 // =====================
