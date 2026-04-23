@@ -169,12 +169,13 @@
 
     let sent = false;
 
-    function sendResult(phrases, trackLang, tracks) {
+    function sendResult(phrases, trackLang, tracks, subPhrases) {
         if (sent) return;
         sent = true;
         window.postMessage({
             type: 'YOUTUBE_CAPTIONS_RESULT',
             phrases: phrases,
+            subPhrases: subPhrases || null,
             trackLang: trackLang || '',
             availableTracks: (tracks || []).map(t => ({ languageCode: t.languageCode }))
         }, '*');
@@ -186,19 +187,31 @@
         window.postMessage({ type: 'YOUTUBE_CAPTIONS_RESULT', phrases: null, error }, '*');
     }
 
-    function trySendIntercepted() {
-        if (sent || interceptedCaptions.length === 0) return;
-        for (const { url, text } of interceptedCaptions) {
-            const phrases = autoParse(text);
-            if (phrases) {
-                // Determine language from URL
-                const langMatch = url.match(/[&?]lang=([^&]+)/);
-                const lang = langMatch ? langMatch[1] : '';
-                console.log('[YT Shadowing intercept] Parsed intercepted captions:', phrases.length, 'lang:', lang);
-                sendResult(phrases, lang, getCaptionTracks());
-                return;
+    // トラックからフレーズを取得（XHR → インターセプト → setOption）
+    async function fetchTrackPhrases(track) {
+        // XHR fetch with multiple formats
+        const fmts = ['srv3', 'srv1', 'json3', 'vtt', ''];
+        for (const fmt of fmts) {
+            const url = fmt ? (track.baseUrl + '&fmt=' + fmt) : track.baseUrl;
+            const text = await xhrFetch(url);
+            if (text.length > 0) {
+                const phrases = autoParse(text);
+                if (phrases) {
+                    console.log('[YT Shadowing injected]', track.languageCode, fmt || 'bare', '=> OK,', phrases.length, 'phrases');
+                    return phrases;
+                }
             }
         }
+
+        // インターセプトから探す
+        for (const { url, text } of interceptedCaptions) {
+            if (url.includes('lang=' + track.languageCode)) {
+                const phrases = autoParse(text);
+                if (phrases) return phrases;
+            }
+        }
+
+        return null;
     }
 
     async function run() {
@@ -215,51 +228,86 @@
             return;
         }
 
-        const track = tracks.find(t => t.languageCode === 'en') || tracks[0];
-        if (!track || !track.baseUrl) {
+        // メイン言語（英語優先）
+        const enTrack = tracks.find(t => t.languageCode === 'en') || tracks[0];
+        if (!enTrack || !enTrack.baseUrl) {
             sendError('no baseUrl');
             return;
         }
 
-        console.log('[YT Shadowing injected] Track:', track.languageCode, 'trying XHR fetch...');
+        console.log('[YT Shadowing injected] Primary track:', enTrack.languageCode);
 
-        // Try XHR fetch with multiple formats (bypasses Service Worker)
-        const fmts = ['srv3', 'srv1', 'json3', 'vtt', ''];
-        for (const fmt of fmts) {
-            if (sent) return;
-            const url = fmt ? (track.baseUrl + '&fmt=' + fmt) : track.baseUrl;
-            const text = await xhrFetch(url);
-            console.log('[YT Shadowing injected] XHR', fmt || 'bare', 'len:', text.length);
-            if (text.length > 0) {
-                const phrases = autoParse(text);
-                if (phrases) {
-                    console.log('[YT Shadowing injected] XHR', fmt || 'bare', '=> OK,', phrases.length, 'phrases');
-                    sendResult(phrases, track.languageCode, tracks);
-                    return;
+        let enPhrases = await fetchTrackPhrases(enTrack);
+
+        // 字幕トグルで強制取得するヘルパー
+        async function toggleFetchTrack(player, langCode) {
+            const beforeCount = interceptedCaptions.length;
+            player.setOption('captions', 'track', {});
+            await new Promise(r => setTimeout(r, 400));
+            player.setOption('captions', 'track', { languageCode: langCode });
+            // 新しいインターセプトを待つ
+            for (let i = 0; i < 40; i++) {
+                await new Promise(r => setTimeout(r, 200));
+                // beforeCount以降の新しいエントリのみチェック
+                for (let k = beforeCount; k < interceptedCaptions.length; k++) {
+                    const phrases = autoParse(interceptedCaptions[k].text);
+                    if (phrases) {
+                        console.log('[YT Shadowing injected] toggle got', langCode, phrases.length, 'phrases');
+                        return phrases;
+                    }
                 }
+            }
+            return null;
+        }
+
+        if (!enPhrases) {
+            // XHR失敗時、字幕OFF→ONでリクエストを強制トリガー
+            console.log('[YT Shadowing injected] XHR failed, trying caption toggle...');
+            try {
+                const player = document.getElementById('movie_player');
+                if (player && typeof player.setOption === 'function') {
+                    enPhrases = await toggleFetchTrack(player, enTrack.languageCode);
+                }
+            } catch (e) {
+                console.log('[YT Shadowing injected] toggle error:', e);
+            }
+
+            if (!enPhrases) {
+                if (!sent) sendError('all methods failed');
+                return;
             }
         }
 
-        // If XHR also failed, try triggering YouTube to load captions
-        console.log('[YT Shadowing injected] XHR failed, trying player.setOption to trigger caption load...');
-        try {
-            const player = document.getElementById('movie_player');
-            if (player && typeof player.setOption === 'function') {
-                player.setOption('captions', 'track', { languageCode: track.languageCode });
-                // Wait for intercepted data
-                for (let i = 0; i < 50; i++) {
-                    if (sent) return;
-                    await new Promise(r => setTimeout(r, 200));
-                    trySendIntercepted();
-                }
+        // 日本語トラックを探して取得
+        const jaTrack = tracks.find(t => t.languageCode === 'ja');
+        let jaPhrases = null;
+
+        if (jaTrack && jaTrack.languageCode !== enTrack.languageCode) {
+            console.log('[YT Shadowing injected] Fetching Japanese track...');
+            // まずXHRで試行
+            if (jaTrack.baseUrl) {
+                jaPhrases = await fetchTrackPhrases(jaTrack);
             }
-        } catch (e) {
-            console.warn('[YT Shadowing injected] setOption error:', e);
+            // XHR失敗時はトグルで取得
+            if (!jaPhrases) {
+                console.log('[YT Shadowing injected] Japanese XHR failed, trying toggle...');
+                try {
+                    const player = document.getElementById('movie_player');
+                    if (player && typeof player.setOption === 'function') {
+                        jaPhrases = await toggleFetchTrack(player, 'ja');
+                        // 英語に戻す
+                        player.setOption('captions', 'track', { languageCode: enTrack.languageCode });
+                    }
+                } catch (e) {}
+            }
+            if (jaPhrases) {
+                console.log('[YT Shadowing injected] Japanese phrases:', jaPhrases.length);
+            } else {
+                console.log('[YT Shadowing injected] Japanese track fetch failed');
+            }
         }
 
-        if (!sent) {
-            sendError('all methods failed');
-        }
+        sendResult(enPhrases, enTrack.languageCode, tracks, jaPhrases);
     }
 
     run();

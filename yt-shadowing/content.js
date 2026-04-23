@@ -29,11 +29,16 @@ function injectScript() {
 }
 
 let captionResult = null;
+let jaPhrasesRaw = null; // 日本語フレーズ（生データ）
 
 window.addEventListener('message', function(event) {
   if (event.source !== window) return;
   if (event.data && event.data.type === 'YOUTUBE_CAPTIONS_RESULT') {
     log('Received captions result:', event.data.phrases ? event.data.phrases.length + ' phrases' : event.data.error);
+    if (event.data.subPhrases) {
+      log('Japanese phrases:', event.data.subPhrases.length);
+    }
+    jaPhrasesRaw = event.data.subPhrases || null;
     captionResult = event.data;
   }
 });
@@ -105,6 +110,19 @@ function buildDefaultSplitPoints(phrases) {
   return points;
 }
 
+// 日本語フレーズを英語フレーズの時間範囲にマッチング
+function matchJaText(start, end, jaPhrases) {
+  if (!jaPhrases || jaPhrases.length === 0) return "";
+  const matched = [];
+  for (const jp of jaPhrases) {
+    // 重なりがあればマッチ
+    if (jp.start < end && jp.end > start) {
+      matched.push(jp.text);
+    }
+  }
+  return matched.join(" ");
+}
+
 function rebuildPhrases() {
   if (allWords.length === 0) {
     activePhrases = [];
@@ -120,11 +138,14 @@ function rebuildPhrases() {
     const to = (i + 1 < unique.length) ? unique[i + 1] : allWords.length;
     const phraseWords = allWords.slice(from, to);
     if (phraseWords.length === 0) continue;
+    const start = phraseWords[0].start;
+    const end = phraseWords[phraseWords.length - 1].end;
     activePhrases.push({
-      start: phraseWords[0].start,
-      end: phraseWords[phraseWords.length - 1].end,
-      duration: phraseWords[phraseWords.length - 1].end - phraseWords[0].start,
+      start: start,
+      end: end,
+      duration: end - start,
       text: phraseWords.map(w => w.text).join(' '),
+      ja: matchJaText(start, end, jaPhrasesRaw),
     });
   }
 }
@@ -204,10 +225,19 @@ function renderPhraseList(phrases) {
     item.dataset.index = i;
     item.innerHTML = `
       <span class="yts-time"></span>
-      <span class="yts-text"></span>
+      <div class="yts-text-block">
+        <span class="yts-text"></span>
+        <span class="yts-text-ja"></span>
+      </div>
     `;
     item.querySelector(".yts-time").textContent = formatTime(phrase.start);
     item.querySelector(".yts-text").textContent = phrase.text;
+    const jaEl = item.querySelector(".yts-text-ja");
+    if (phrase.ja) {
+      jaEl.textContent = phrase.ja;
+    } else {
+      jaEl.style.display = "none";
+    }
     item.onclick = () => {
       if (!repeatingActive) {
         selectPhrase(i, phrases, item);
@@ -641,6 +671,7 @@ async function init() {
   log("videoId:", videoId);
 
   captionResult = null;
+  jaPhrasesRaw = null;
   injectScript();
 
   buildPanel([], "字幕を取得中…");
