@@ -21,11 +21,6 @@ async function toggleRecordForPhrase(index, itemEl) {
     return;
   }
 
-  // 別のフレーズで録音中なら先に停止
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  }
-
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     recordedChunks = [];
@@ -67,7 +62,6 @@ function playRecordingForPhrase(index, itemEl) {
   if (playingAudio) {
     playingAudio.pause();
     playingAudio.currentTime = 0;
-    // 前の再生ボタンのテキストを戻す
     document.querySelectorAll(".yts-playrec-btn").forEach(btn => {
       btn.textContent = "🔊";
     });
@@ -100,65 +94,6 @@ function markRecorded(index) {
   }
 }
 
-// リピーティングモード用: 自動録音（content.jsから呼ばれる）
-async function autoRecord(durationMs) {
-  return new Promise(async (resolve) => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordedChunks = [];
-      const rec = new MediaRecorder(stream);
-      const captureIndex = typeof currentPhraseIndex !== "undefined" ? currentPhraseIndex : null;
-
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) recordedChunks.push(e.data);
-      };
-
-      rec.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: "audio/webm" });
-        if (captureIndex !== null) {
-          if (phraseRecordings[captureIndex]) {
-            URL.revokeObjectURL(phraseRecordings[captureIndex]);
-          }
-          phraseRecordings[captureIndex] = URL.createObjectURL(blob);
-          markRecorded(captureIndex);
-          // インラインの録音再生ボタンも有効化
-          const item = document.querySelector(`.yts-phrase-item[data-index="${captureIndex}"]`);
-          if (item) {
-            const btn = item.querySelector(".yts-playrec-btn");
-            if (btn) btn.disabled = false;
-          }
-        }
-        stream.getTracks().forEach((t) => t.stop());
-        resolve();
-      };
-
-      rec.start();
-      setTimeout(() => {
-        if (rec.state === "recording") rec.stop();
-      }, durationMs);
-    } catch (err) {
-      resolve();
-    }
-  });
-}
-
-// リピーティングモード用: 自動再生
-function autoPlayRecording() {
-  return new Promise((resolve) => {
-    const idx = typeof currentPhraseIndex !== "undefined" ? currentPhraseIndex : null;
-    if (idx === null || !phraseRecordings[idx]) {
-      resolve();
-      return;
-    }
-    const audio = new Audio(phraseRecordings[idx]);
-    audio.onended = () => resolve();
-    audio.onerror = () => resolve();
-    audio.play().catch(() => resolve());
-  });
-}
-
-// 後方互換: initRecorderは空にする（下部ボタンは廃止）
-function initRecorder() {}
-
 // 後方互換
+function initRecorder() {}
 function updatePlayRecBtn() {}
