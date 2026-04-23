@@ -513,8 +513,9 @@ async function startRepeatingMode() {
     if (repeatingAbort) break;
 
     // ステップ3: 録音
+    log("autoRecord phrase", i, "duration:", phrase.duration, "end-start:", phrase.end - phrase.start);
     setStepIndicator("⏺ 録音中… (クリックで停止)");
-    const recorded = await autoRecord(i, phrase.duration);
+    const recorded = await autoRecord(i, phrase.end - phrase.start);
     if (repeatingAbort) break;
 
     // ステップ4: 録音再生
@@ -597,8 +598,8 @@ function autoRecord(phraseIndex, phraseDuration) {
         recBtn.classList.add("recording");
       }
 
-      // 自動停止: フレーズの長さ + 1.5秒の余裕
-      const autoStopMs = Math.max(phraseDuration, 0.5) * 1000 + 1500;
+      // 自動停止: フレーズの長さ + 2.5秒の余裕（最低4秒）
+      const autoStopMs = Math.max(Math.max(phraseDuration, 1) * 1000 + 2500, 4000);
       const autoTimer = setTimeout(() => {
         if (mediaRecorder && mediaRecorder.state === "recording") {
           mediaRecorder.stop();
