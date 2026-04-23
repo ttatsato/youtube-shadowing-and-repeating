@@ -28,8 +28,7 @@ function injectScript() {
   log("injected script inserted");
 }
 
-// injected script から字幕データを受け取る
-let captionResult = null; // { phrases, trackLang, availableTracks } or null
+let captionResult = null;
 
 window.addEventListener('message', function(event) {
   if (event.source !== window) return;
@@ -40,12 +39,12 @@ window.addEventListener('message', function(event) {
 });
 
 // =====================
-// 字幕取得（injected scriptの結果を待つ）
+// 字幕取得
 // =====================
 
 async function waitForCaptions() {
   let attempts = 0;
-  const maxAttempts = 150; // 15 seconds max
+  const maxAttempts = 150;
   while (captionResult === null && attempts < maxAttempts) {
     await new Promise(resolve => setTimeout(resolve, 100));
     attempts++;
@@ -67,6 +66,76 @@ function getVideo() {
 }
 
 // =====================
+// 単語・タイミング管理
+// =====================
+
+// rawPhrases: 元の字幕フレーズ（変更しない）
+// allWords: 全単語をフラットにしたもの（各単語にタイムスタンプ付き）
+// splitPoints: Set<number> 区切り位置（単語インデックス。その単語の前で区切る）
+// activePhrases: splitPointsから生成された現在のフレーズ配列
+
+let rawPhrases = [];
+let allWords = [];    // [{ text, start, end }]
+let splitPoints = new Set();
+let activePhrases = [];
+
+function buildWords(phrases) {
+  const words = [];
+  for (const phrase of phrases) {
+    const phWords = phrase.text.split(/\s+/).filter(w => w);
+    const count = phWords.length;
+    for (let i = 0; i < count; i++) {
+      const ratio = count > 1 ? i / count : 0;
+      const ratioEnd = count > 1 ? (i + 1) / count : 1;
+      words.push({
+        text: phWords[i],
+        start: phrase.start + (phrase.duration * ratio),
+        end: phrase.start + (phrase.duration * ratioEnd),
+      });
+    }
+  }
+  return words;
+}
+
+function buildDefaultSplitPoints(phrases) {
+  const points = new Set();
+  let wordIndex = 0;
+  for (const phrase of phrases) {
+    if (wordIndex > 0) {
+      points.add(wordIndex);
+    }
+    const count = phrase.text.split(/\s+/).filter(w => w).length;
+    wordIndex += count;
+  }
+  return points;
+}
+
+function rebuildPhrases() {
+  if (allWords.length === 0) {
+    activePhrases = [];
+    return;
+  }
+
+  const sortedSplits = [0, ...Array.from(splitPoints).sort((a, b) => a - b)];
+  // 0が重複しないように
+  const unique = [...new Set(sortedSplits)];
+
+  activePhrases = [];
+  for (let i = 0; i < unique.length; i++) {
+    const from = unique[i];
+    const to = (i + 1 < unique.length) ? unique[i + 1] : allWords.length;
+    const phraseWords = allWords.slice(from, to);
+    if (phraseWords.length === 0) continue;
+    activePhrases.push({
+      start: phraseWords[0].start,
+      end: phraseWords[phraseWords.length - 1].end,
+      duration: phraseWords[phraseWords.length - 1].end - phraseWords[0].start,
+      text: phraseWords.map(w => w.text).join(' '),
+    });
+  }
+}
+
+// =====================
 // UI構築
 // =====================
 
@@ -80,10 +149,14 @@ function buildPanel(phrases, statusMessage) {
   panel.innerHTML = `
     <div id="yts-header">
       <span>🎤 YT Shadowing</span>
-      <button id="yts-close" title="閉じる">✕</button>
+      <div id="yts-header-buttons">
+        <button id="yts-edit" title="区切り編集">✂</button>
+        <button id="yts-close" title="閉じる">✕</button>
+      </div>
     </div>
     <div id="yts-status"></div>
     <div id="yts-phrase-list"></div>
+    <div id="yts-split-editor" style="display:none"></div>
     <div id="yts-controls">
       <div id="yts-current-phrase">フレーズを選択してください</div>
       <div id="yts-buttons">
@@ -105,7 +178,26 @@ function buildPanel(phrases, statusMessage) {
     statusEl.style.display = "block";
   }
 
+  // 編集ボタン（フレーズがある時だけ有効）
+  const editBtn = document.getElementById("yts-edit");
+  if (phrases.length === 0) {
+    editBtn.style.display = "none";
+  } else {
+    editBtn.onclick = () => openSplitEditor();
+  }
+
+  renderPhraseList(phrases);
+
+  document.getElementById("yts-replay").onclick = () => {
+    if (currentPhrase) playPhrase(currentPhrase);
+  };
+}
+
+function renderPhraseList(phrases) {
   const list = document.getElementById("yts-phrase-list");
+  if (!list) return;
+  list.innerHTML = "";
+
   phrases.forEach((phrase, i) => {
     const item = document.createElement("div");
     item.className = "yts-phrase-item";
@@ -119,10 +211,96 @@ function buildPanel(phrases, statusMessage) {
     item.onclick = () => selectPhrase(i, phrases, item);
     list.appendChild(item);
   });
+}
 
-  document.getElementById("yts-replay").onclick = () => {
-    if (currentPhrase) playPhrase(currentPhrase);
-  };
+// =====================
+// 区切り編集モード
+// =====================
+
+function openSplitEditor() {
+  const list = document.getElementById("yts-phrase-list");
+  const editor = document.getElementById("yts-split-editor");
+  const editBtn = document.getElementById("yts-edit");
+  const controls = document.getElementById("yts-controls");
+  if (!editor) return;
+
+  list.style.display = "none";
+  controls.style.display = "none";
+  editor.style.display = "flex";
+  editBtn.textContent = "✓";
+  editBtn.title = "編集完了";
+  editBtn.onclick = () => closeSplitEditor();
+
+  renderSplitEditor();
+}
+
+function closeSplitEditor() {
+  const list = document.getElementById("yts-phrase-list");
+  const editor = document.getElementById("yts-split-editor");
+  const editBtn = document.getElementById("yts-edit");
+  const controls = document.getElementById("yts-controls");
+  if (!editor) return;
+
+  editor.style.display = "none";
+  list.style.display = "";
+  controls.style.display = "";
+  editBtn.textContent = "✂";
+  editBtn.title = "区切り編集";
+  editBtn.onclick = () => openSplitEditor();
+
+  // フレーズを再構築して表示更新
+  rebuildPhrases();
+  renderPhraseList(activePhrases);
+  currentPhrase = null;
+  currentPhraseIndex = null;
+
+  if (typeof initRecorder === "function") {
+    initRecorder();
+  }
+}
+
+function renderSplitEditor() {
+  const editor = document.getElementById("yts-split-editor");
+  if (!editor) return;
+  editor.innerHTML = "";
+
+  const hint = document.createElement("div");
+  hint.className = "yts-edit-hint";
+  hint.textContent = "単語間をクリックして区切りを追加/削除";
+  editor.appendChild(hint);
+
+  const wordContainer = document.createElement("div");
+  wordContainer.className = "yts-word-container";
+
+  allWords.forEach((word, i) => {
+    // 区切りマーカー（最初の単語の前には表示しない）
+    if (i > 0) {
+      const splitter = document.createElement("span");
+      splitter.className = "yts-splitter";
+      if (splitPoints.has(i)) {
+        splitter.classList.add("active");
+      }
+      splitter.textContent = "|";
+      splitter.onclick = (e) => {
+        e.stopPropagation();
+        if (splitPoints.has(i)) {
+          splitPoints.delete(i);
+          splitter.classList.remove("active");
+        } else {
+          splitPoints.add(i);
+          splitter.classList.add("active");
+        }
+      };
+      wordContainer.appendChild(splitter);
+    }
+
+    const wordEl = document.createElement("span");
+    wordEl.className = "yts-word";
+    wordEl.textContent = word.text;
+    wordContainer.appendChild(wordEl);
+  });
+
+  editor.appendChild(wordContainer);
 }
 
 // =====================
@@ -144,7 +322,6 @@ function selectPhrase(index, phrases, itemEl) {
   document.getElementById("yts-current-phrase").textContent =
     currentPhrase.text;
 
-  // 録音再生ボタンの状態を更新
   if (typeof updatePlayRecBtn === "function") {
     updatePlayRecBtn();
   }
@@ -200,13 +377,9 @@ async function init() {
   }
   log("videoId:", videoId);
 
-  // Reset for new video
   captionResult = null;
-
-  // Inject script to fetch captions in page context
   injectScript();
 
-  // Show loading
   buildPanel([], "字幕を取得中…");
 
   let phrases = null;
@@ -223,7 +396,14 @@ async function init() {
   }
 
   log("phrases loaded:", phrases.length);
-  buildPanel(phrases);
+
+  // 単語データと区切りを初期化
+  rawPhrases = phrases;
+  allWords = buildWords(phrases);
+  splitPoints = buildDefaultSplitPoints(phrases);
+  rebuildPhrases();
+
+  buildPanel(activePhrases);
   if (typeof initRecorder === "function") {
     initRecorder();
   } else {
@@ -234,7 +414,7 @@ async function init() {
 }
 
 // =====================
-// ページ遷移対応（YouTubeはSPA）
+// ページ遷移対応
 // =====================
 
 let lastVideoId = "";
@@ -260,7 +440,6 @@ window.addEventListener('yt-navigate-finish', () => {
   checkUrl();
 });
 
-// 初回実行
 if (location.href.includes("/watch")) {
   const urlParams = new URLSearchParams(window.location.search);
   lastVideoId = urlParams.get("v") || "";
