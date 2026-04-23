@@ -248,9 +248,13 @@
             // 新しいインターセプトを待つ
             for (let i = 0; i < 40; i++) {
                 await new Promise(r => setTimeout(r, 200));
-                // beforeCount以降の新しいエントリのみチェック
+                // beforeCount以降の新しいエントリのみチェック（URL言語フィルタ付き）
                 for (let k = beforeCount; k < interceptedCaptions.length; k++) {
-                    const phrases = autoParse(interceptedCaptions[k].text);
+                    const ic = interceptedCaptions[k];
+                    // URLに別の言語が明示されていたらスキップ
+                    const langMatch = ic.url.match(/[?&]lang=([^&]+)/);
+                    if (langMatch && langMatch[1] !== langCode) continue;
+                    const phrases = autoParse(ic.text);
                     if (phrases) {
                         console.log('[YT Shadowing injected] toggle got', langCode, phrases.length, 'phrases');
                         return phrases;

@@ -224,6 +224,7 @@ function renderPhraseList(phrases) {
     item.className = "yts-phrase-item";
     item.dataset.index = i;
     item.innerHTML = `
+      <button class="yts-play-btn" title="再生">▶</button>
       <span class="yts-time"></span>
       <div class="yts-text-block">
         <span class="yts-text"></span>
@@ -238,6 +239,15 @@ function renderPhraseList(phrases) {
     } else {
       jaEl.style.display = "none";
     }
+    // 再生ボタン: 選択＆再生
+    item.querySelector(".yts-play-btn").onclick = (e) => {
+      e.stopPropagation();
+      if (!repeatingActive) {
+        selectPhrase(i, phrases, item);
+        playPhrase(phrases[i]);
+      }
+    };
+    // 行クリック: 選択のみ
     item.onclick = () => {
       if (!repeatingActive) {
         selectPhrase(i, phrases, item);
