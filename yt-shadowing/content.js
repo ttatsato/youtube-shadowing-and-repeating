@@ -174,7 +174,10 @@ function buildPanel(phrases, statusMessage) {
     <div id="yts-split-editor" style="display:none"></div>
     <div id="yts-controls">
       <div id="yts-step-indicator"></div>
-      <button id="yts-repeat-mode">🔁 リピーティング開始</button>
+      <div id="yts-mode-buttons">
+        <button id="yts-repeat-mode">🔁 リピーティング</button>
+        <button id="yts-overlap-mode">🎙 オーバーラッピング</button>
+      </div>
     </div>
   `;
 
@@ -183,6 +186,7 @@ function buildPanel(phrases, statusMessage) {
 
   document.getElementById("yts-close").onclick = () => {
     stopRepeatingMode();
+    stopOverlappingMode();
     panel.remove();
   };
 
@@ -196,9 +200,11 @@ function buildPanel(phrases, statusMessage) {
   if (phrases.length === 0) {
     editBtn.style.display = "none";
     document.getElementById("yts-repeat-mode").style.display = "none";
+    document.getElementById("yts-overlap-mode").style.display = "none";
   } else {
     editBtn.onclick = () => openSplitEditor();
     document.getElementById("yts-repeat-mode").onclick = () => toggleRepeatingMode();
+    document.getElementById("yts-overlap-mode").onclick = () => toggleOverlappingMode();
   }
 
   renderPhraseList(phrases);
@@ -452,7 +458,7 @@ function stopRepeatingMode() {
 
   const btn = document.getElementById("yts-repeat-mode");
   if (btn) {
-    btn.textContent = "🔁 リピーティング開始";
+    btn.textContent = "🔁 リピーティング";
     btn.classList.remove("active");
   }
 
@@ -481,6 +487,8 @@ async function startRepeatingMode() {
   // 編集・手動操作ボタンを無効化
   const editBtn = document.getElementById("yts-edit");
   if (editBtn) editBtn.disabled = true;
+  const overlapBtn = document.getElementById("yts-overlap-mode");
+  if (overlapBtn) overlapBtn.disabled = true;
 
   log("repeating mode started");
 
@@ -538,14 +546,240 @@ async function startRepeatingMode() {
   }
 
   if (editBtn) editBtn.disabled = false;
+  if (overlapBtn) overlapBtn.disabled = false;
   repeatingActive = false;
 
   if (btn) {
-    btn.textContent = "🔁 リピーティング開始";
+    btn.textContent = "🔁 リピーティング";
     btn.classList.remove("active");
   }
 
   log("repeating mode finished");
+}
+
+// =====================
+// オーバーラッピングモード
+// =====================
+
+let overlappingActive = false;
+let overlappingAbort = false;
+let overlappingStream = null;
+let overlappingRecorder = null;
+
+function toggleOverlappingMode() {
+  if (overlappingActive) {
+    stopOverlappingMode();
+  } else {
+    startOverlappingMode();
+  }
+}
+
+function stopOverlappingMode() {
+  overlappingActive = false;
+  overlappingAbort = true;
+
+  if (overlappingRecorder && overlappingRecorder.state === "recording") {
+    overlappingRecorder.stop();
+  }
+
+  const video = getVideo();
+  if (video) video.pause();
+
+  const btn = document.getElementById("yts-overlap-mode");
+  if (btn) {
+    btn.textContent = "🎙 オーバーラッピング";
+    btn.classList.remove("active");
+  }
+
+  setStepIndicator("録音を保存中…");
+  log("overlapping mode stopped");
+}
+
+async function startOverlappingMode() {
+  if (activePhrases.length === 0) return;
+
+  const video = getVideo();
+  if (!video) {
+    warn("video要素が見つかりません");
+    return;
+  }
+
+  // マイクアクセスを先に取得
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    alert("マイクへのアクセスを許可してください");
+    return;
+  }
+
+  overlappingActive = true;
+  overlappingAbort = false;
+  overlappingStream = stream;
+
+  const btn = document.getElementById("yts-overlap-mode");
+  if (btn) {
+    btn.textContent = "⏹ オーバーラッピング停止";
+    btn.classList.add("active");
+  }
+
+  const editBtn = document.getElementById("yts-edit");
+  if (editBtn) editBtn.disabled = true;
+  const repeatBtn = document.getElementById("yts-repeat-mode");
+  if (repeatBtn) repeatBtn.disabled = true;
+
+  log("overlapping mode started");
+
+  const startIndex = (currentPhraseIndex !== null && currentPhraseIndex >= 0)
+    ? currentPhraseIndex : 0;
+
+  // 録音を1本で開始（フレーズごとに切らない）
+  const recChunks = [];
+  const rec = new MediaRecorder(stream);
+  overlappingRecorder = rec;
+
+  rec.ondataavailable = (e) => {
+    if (e.data.size > 0) recChunks.push(e.data);
+  };
+
+  // onstop を先に登録しておく（abort時にも確実に発火させるため）
+  const recDone = new Promise((resolve) => {
+    rec.onstop = () => {
+      const blob = new Blob(recChunks, { type: "audio/webm" });
+      if (phraseRecordings["_overlap"]) {
+        URL.revokeObjectURL(phraseRecordings["_overlap"]);
+      }
+      phraseRecordings["_overlap"] = URL.createObjectURL(blob);
+      log("overlap recording saved, chunks:" + recChunks.length);
+      resolve();
+    };
+  });
+
+  rec.start();
+  setStepIndicator("🎙 オーバーラッピング中…");
+
+  // 動画を開始位置にシークして再生
+  video.currentTime = activePhrases[startIndex].start;
+  const playPromise = video.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(err => warn("play failed:", err));
+  }
+
+  // timeupdate でフレーズを追跡（動画は通しで再生）
+  const lastPhrase = activePhrases[activePhrases.length - 1];
+  let lastHighlighted = -1;
+
+  await new Promise((resolve) => {
+    const onTime = () => {
+      const t = video.currentTime;
+
+      for (let i = startIndex; i < activePhrases.length; i++) {
+        if (t >= activePhrases[i].start && t < activePhrases[i].end) {
+          if (i !== lastHighlighted) {
+            lastHighlighted = i;
+            currentPhrase = activePhrases[i];
+            currentPhraseIndex = i;
+            highlightPhraseItem(i);
+          }
+          break;
+        }
+      }
+
+      if (t >= lastPhrase.end) {
+        video.removeEventListener("timeupdate", onTime);
+        clearInterval(abortCheck);
+        video.pause();
+        resolve();
+      }
+    };
+
+    video.addEventListener("timeupdate", onTime);
+
+    const abortCheck = setInterval(() => {
+      if (overlappingAbort) {
+        video.removeEventListener("timeupdate", onTime);
+        clearInterval(abortCheck);
+        video.pause();
+        resolve();
+      }
+    }, 100);
+  });
+
+  // 録音停止＆保存を待つ
+  if (rec.state === "recording") rec.stop();
+  await recDone;
+
+  // マイク解放
+  stream.getTracks().forEach(t => t.stop());
+  overlappingStream = null;
+  overlappingRecorder = null;
+
+  // UI復元
+  if (editBtn) editBtn.disabled = false;
+  if (repeatBtn) repeatBtn.disabled = false;
+  overlappingActive = false;
+
+  if (btn) {
+    btn.textContent = "🎙 オーバーラッピング";
+    btn.classList.remove("active");
+  }
+
+  // 完了時は自動再生してから再生ボタン表示
+  if (!overlappingAbort && phraseRecordings["_overlap"]) {
+    setStepIndicator("🔊 録音を再生中…");
+    await new Promise((resolve) => {
+      const audio = new Audio(phraseRecordings["_overlap"]);
+      audio.onended = () => resolve();
+      audio.onerror = () => resolve();
+      audio.play().catch(() => resolve());
+    });
+  }
+
+  // 録音があれば再生ボタンを常に表示（完了でも中断でも）
+  if (phraseRecordings["_overlap"]) {
+    showOverlapPlaybackButton();
+  } else {
+    setStepIndicator("");
+  }
+
+  log("overlapping mode finished");
+}
+
+let overlapPlayingAudio = null;
+
+function showOverlapPlaybackButton() {
+  const indicator = document.getElementById("yts-step-indicator");
+  if (!indicator) return;
+
+  indicator.innerHTML = "";
+  const playBtn = document.createElement("button");
+  playBtn.textContent = "🔊 オーバーラッピング録音を再生";
+  playBtn.style.cssText = "background:#3A45C0;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;margin-right:6px;";
+
+  playBtn.onclick = () => {
+    if (overlapPlayingAudio) {
+      overlapPlayingAudio.pause();
+      overlapPlayingAudio.currentTime = 0;
+      overlapPlayingAudio = null;
+      playBtn.textContent = "🔊 オーバーラッピング録音を再生";
+      return;
+    }
+    const url = phraseRecordings["_overlap"];
+    if (!url) return;
+    const audio = new Audio(url);
+    overlapPlayingAudio = audio;
+    playBtn.textContent = "⏹ 再生停止";
+    audio.onended = () => {
+      overlapPlayingAudio = null;
+      playBtn.textContent = "🔊 オーバーラッピング録音を再生";
+    };
+    audio.play().catch(() => {
+      overlapPlayingAudio = null;
+      playBtn.textContent = "🔊 オーバーラッピング録音を再生";
+    });
+  };
+
+  indicator.appendChild(playBtn);
 }
 
 function sleep(ms) {
@@ -732,8 +966,8 @@ function setupTimeTracking() {
   let lastTrackedIndex = -1;
 
   const onTimeUpdate = () => {
-    // リピーティングモード中は干渉しない
-    if (repeatingActive) return;
+    // モード中は干渉しない
+    if (repeatingActive || overlappingActive) return;
     if (activePhrases.length === 0) return;
 
     const t = video.currentTime;
