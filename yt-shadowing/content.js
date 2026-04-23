@@ -173,13 +173,7 @@ function buildPanel(phrases, statusMessage) {
     <div id="yts-phrase-list"></div>
     <div id="yts-split-editor" style="display:none"></div>
     <div id="yts-controls">
-      <div id="yts-current-phrase">フレーズを選択してください</div>
       <div id="yts-step-indicator"></div>
-      <div id="yts-buttons">
-        <button id="yts-replay">▶ 再生</button>
-        <button id="yts-record">⏺ 録音</button>
-        <button id="yts-play-rec" disabled>🔊 録音再生</button>
-      </div>
       <button id="yts-repeat-mode">🔁 リピーティング開始</button>
     </div>
   `;
@@ -208,10 +202,6 @@ function buildPanel(phrases, statusMessage) {
   }
 
   renderPhraseList(phrases);
-
-  document.getElementById("yts-replay").onclick = () => {
-    if (currentPhrase) playPhrase(currentPhrase);
-  };
 }
 
 function renderPhraseList(phrases) {
@@ -224,7 +214,11 @@ function renderPhraseList(phrases) {
     item.className = "yts-phrase-item";
     item.dataset.index = i;
     item.innerHTML = `
-      <button class="yts-play-btn" title="再生">▶</button>
+      <div class="yts-phrase-buttons">
+        <button class="yts-play-btn" title="再生">▶</button>
+        <button class="yts-rec-btn" title="録音">⏺</button>
+        <button class="yts-playrec-btn" title="録音再生" disabled>🔊</button>
+      </div>
       <span class="yts-time"></span>
       <div class="yts-text-block">
         <span class="yts-text"></span>
@@ -245,6 +239,22 @@ function renderPhraseList(phrases) {
       if (!repeatingActive) {
         selectPhrase(i, phrases, item);
         playPhrase(phrases[i]);
+      }
+    };
+    // 録音ボタン
+    item.querySelector(".yts-rec-btn").onclick = (e) => {
+      e.stopPropagation();
+      if (!repeatingActive) {
+        selectPhrase(i, phrases, item);
+        toggleRecordForPhrase(i, item);
+      }
+    };
+    // 録音再生ボタン
+    item.querySelector(".yts-playrec-btn").onclick = (e) => {
+      e.stopPropagation();
+      if (!repeatingActive) {
+        selectPhrase(i, phrases, item);
+        playRecordingForPhrase(i, item);
       }
     };
     // 行クリック: 選択のみ
@@ -362,12 +372,6 @@ function selectPhrase(index, phrases, itemEl) {
 
   currentPhrase = phrases[index];
   currentPhraseIndex = index;
-  document.getElementById("yts-current-phrase").textContent =
-    currentPhrase.text;
-
-  if (typeof updatePlayRecBtn === "function") {
-    updatePlayRecBtn();
-  }
 }
 
 // playPhraseAsync: フレーズ再生が終わるまで待てるPromise版
@@ -452,12 +456,11 @@ function stopRepeatingMode() {
     btn.classList.remove("active");
   }
 
-  const recordBtn = document.getElementById("yts-record");
-  if (recordBtn) {
-    recordBtn.textContent = "⏺ 録音";
-    recordBtn.classList.remove("recording");
-    recordBtn.disabled = false;
-  }
+  // インラインの録音ボタンをリセット
+  document.querySelectorAll(".yts-rec-btn.recording").forEach(btn => {
+    btn.textContent = "⏺";
+    btn.classList.remove("recording");
+  });
 
   setStepIndicator("");
   log("repeating mode stopped");
@@ -491,9 +494,6 @@ async function startRepeatingMode() {
     currentPhrase = phrase;
     currentPhraseIndex = i;
     highlightPhraseItem(i);
-    document.getElementById("yts-current-phrase").textContent = phrase.text;
-
-    if (typeof updatePlayRecBtn === "function") updatePlayRecBtn();
 
     // ステップ1: 1回目再生
     setStepIndicator("🔊 1回目の再生");
@@ -552,13 +552,13 @@ function sleep(ms) {
 }
 
 // 自動録音: フレーズの長さ + 余裕分だけ録音して自動停止
-// ユーザーが手動で停止することも可能
 function autoRecord(phraseIndex, phraseDuration) {
   return new Promise(async (resolve) => {
     if (repeatingAbort) { resolve(false); return; }
 
-    const recordBtn = document.getElementById("yts-record");
-    const playRecBtn = document.getElementById("yts-play-rec");
+    // インラインの録音ボタンを点滅表示
+    const item = document.querySelector(`.yts-phrase-item[data-index="${phraseIndex}"]`);
+    const recBtn = item ? item.querySelector(".yts-rec-btn") : null;
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -580,28 +580,22 @@ function autoRecord(phraseIndex, phraseDuration) {
         stream.getTracks().forEach(t => t.stop());
         markRecorded(captureIndex);
 
-        if (recordBtn) {
-          recordBtn.textContent = "⏺ 録音";
-          recordBtn.classList.remove("recording");
+        if (recBtn) {
+          recBtn.textContent = "⏺";
+          recBtn.classList.remove("recording");
         }
+        // 録音再生ボタン有効化
+        const playRecBtn = item ? item.querySelector(".yts-playrec-btn") : null;
         if (playRecBtn) playRecBtn.disabled = false;
 
         if (!resolved) { resolved = true; resolve(true); }
       };
 
       mediaRecorder.start();
-      if (recordBtn) {
-        recordBtn.textContent = "⏹ 停止";
-        recordBtn.classList.add("recording");
+      if (recBtn) {
+        recBtn.textContent = "⏹";
+        recBtn.classList.add("recording");
       }
-
-      // 手動停止用: 録音ボタンクリックで停止
-      const manualStop = () => {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-          mediaRecorder.stop();
-        }
-      };
-      if (recordBtn) recordBtn.onclick = manualStop;
 
       // 自動停止: フレーズの長さ + 1.5秒の余裕
       const autoStopMs = Math.max(phraseDuration, 0.5) * 1000 + 1500;
@@ -620,7 +614,6 @@ function autoRecord(phraseIndex, phraseDuration) {
         }
       }, 100);
 
-      // onstopで解決されるので、タイマーのクリーンアップだけ
       mediaRecorder.addEventListener('stop', () => {
         clearTimeout(autoTimer);
         clearInterval(checkAbort);

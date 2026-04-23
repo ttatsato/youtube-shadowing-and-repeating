@@ -77,24 +77,53 @@
   background: #2a2a2a;
 }
 
-.yts-play-btn {
-  background: none;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  font-size: 10px;
-  padding: 2px 0 0 0;
-  min-width: 16px;
+.yts-phrase-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   flex-shrink: 0;
-  transition: color 0.15s;
+  padding-top: 1px;
 }
 
-.yts-play-btn:hover {
-  color: #ff4444;
+.yts-play-btn,
+.yts-rec-btn,
+.yts-playrec-btn {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 9px;
+  padding: 1px 2px;
+  min-width: 18px;
+  text-align: center;
+  transition: color 0.15s, background 0.15s;
+  border-radius: 3px;
+}
+
+.yts-play-btn:hover,
+.yts-rec-btn:hover,
+.yts-playrec-btn:hover {
+  color: #ccc;
+  background: #333;
 }
 
 .yts-phrase-item.active .yts-play-btn {
   color: #ff4444;
+}
+
+.yts-rec-btn.recording {
+  color: #ff0000;
+  animation: pulse 1s infinite;
+}
+
+.yts-playrec-btn:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
+
+.yts-playrec-btn:disabled:hover {
+  background: none;
+  color: #555;
 }
 
 .yts-phrase-item.active {

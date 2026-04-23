@@ -1,85 +1,93 @@
 let mediaRecorder = null;
 let recordedChunks = [];
+let recordingIndex = null; // 現在録音中のフレーズindex
 
 // フレーズごとの録音を保存: { [phraseIndex]: audioUrl }
 const phraseRecordings = {};
 
-function initRecorder() {
-  const recordBtn = document.getElementById("yts-record");
-  const playRecBtn = document.getElementById("yts-play-rec");
+let playingAudio = null;
 
-  if (!recordBtn) return;
+// フレーズ行の録音ボタンから呼ばれる
+async function toggleRecordForPhrase(index, itemEl) {
+  const recBtn = itemEl.querySelector(".yts-rec-btn");
+  if (!recBtn) return;
 
-  recordBtn.onclick = async () => {
-    if (typeof currentPhraseIndex === "undefined" || currentPhraseIndex === null) {
-      return;
-    }
+  // 既に録音中なら停止
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+    recBtn.textContent = "⏺";
+    recBtn.classList.remove("recording");
+    recordingIndex = null;
+    return;
+  }
 
-    if (mediaRecorder && mediaRecorder.state === "recording") {
-      mediaRecorder.stop();
-      recordBtn.textContent = "⏺ 録音";
-      recordBtn.classList.remove("recording");
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        recordedChunks = [];
-        mediaRecorder = new MediaRecorder(stream);
-        const captureIndex = currentPhraseIndex;
+  // 別のフレーズで録音中なら先に停止
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
 
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) recordedChunks.push(e.data);
-        };
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    recordingIndex = index;
 
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(recordedChunks, { type: "audio/webm" });
-          // 古いURLを解放
-          if (phraseRecordings[captureIndex]) {
-            URL.revokeObjectURL(phraseRecordings[captureIndex]);
-          }
-          phraseRecordings[captureIndex] = URL.createObjectURL(blob);
-          playRecBtn.disabled = false;
-          stream.getTracks().forEach((t) => t.stop());
-          // フレーズリストに録音済みマーク
-          markRecorded(captureIndex);
-        };
-
-        mediaRecorder.start();
-        recordBtn.textContent = "⏹ 停止";
-        recordBtn.classList.add("recording");
-      } catch (err) {
-        alert("マイクへのアクセスを許可してください");
-      }
-    }
-  };
-
-  let playingAudio = null;
-
-  playRecBtn.onclick = () => {
-    // 再生中なら停止
-    if (playingAudio) {
-      playingAudio.pause();
-      playingAudio = null;
-      playRecBtn.textContent = "🔊 録音再生";
-      return;
-    }
-
-    if (typeof currentPhraseIndex === "undefined" || currentPhraseIndex === null) return;
-    const url = phraseRecordings[currentPhraseIndex];
-    if (!url) return;
-
-    const audio = new Audio(url);
-    playingAudio = audio;
-    playRecBtn.textContent = "⏹ 停止";
-    recordBtn.disabled = true;
-
-    audio.onended = () => {
-      playingAudio = null;
-      playRecBtn.textContent = "🔊 録音再生";
-      recordBtn.disabled = false;
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
     };
 
-    audio.play();
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: "audio/webm" });
+      if (phraseRecordings[index]) {
+        URL.revokeObjectURL(phraseRecordings[index]);
+      }
+      phraseRecordings[index] = URL.createObjectURL(blob);
+      stream.getTracks().forEach((t) => t.stop());
+      // 録音再生ボタンを有効化
+      const playRecBtn = itemEl.querySelector(".yts-playrec-btn");
+      if (playRecBtn) playRecBtn.disabled = false;
+      // 録音済みマーク
+      markRecorded(index);
+    };
+
+    mediaRecorder.start();
+    recBtn.textContent = "⏹";
+    recBtn.classList.add("recording");
+  } catch (err) {
+    alert("マイクへのアクセスを許可してください");
+  }
+}
+
+// フレーズ行の録音再生ボタンから呼ばれる
+function playRecordingForPhrase(index, itemEl) {
+  const playRecBtn = itemEl.querySelector(".yts-playrec-btn");
+  if (!playRecBtn) return;
+
+  // 再生中なら停止
+  if (playingAudio) {
+    playingAudio.pause();
+    playingAudio.currentTime = 0;
+    // 前の再生ボタンのテキストを戻す
+    document.querySelectorAll(".yts-playrec-btn").forEach(btn => {
+      btn.textContent = "🔊";
+    });
+    playingAudio = null;
+    return;
+  }
+
+  const url = phraseRecordings[index];
+  if (!url) return;
+
+  const audio = new Audio(url);
+  playingAudio = audio;
+  playRecBtn.textContent = "⏹";
+
+  audio.onended = () => {
+    playingAudio = null;
+    playRecBtn.textContent = "🔊";
   };
+
+  audio.play();
 }
 
 function markRecorded(index) {
@@ -92,13 +100,65 @@ function markRecorded(index) {
   }
 }
 
-// フレーズ選択時に録音再生ボタンの状態を更新
-function updatePlayRecBtn() {
-  const playRecBtn = document.getElementById("yts-play-rec");
-  if (!playRecBtn) return;
-  if (typeof currentPhraseIndex !== "undefined" && phraseRecordings[currentPhraseIndex]) {
-    playRecBtn.disabled = false;
-  } else {
-    playRecBtn.disabled = true;
-  }
+// リピーティングモード用: 自動録音（content.jsから呼ばれる）
+async function autoRecord(durationMs) {
+  return new Promise(async (resolve) => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunks = [];
+      const rec = new MediaRecorder(stream);
+      const captureIndex = typeof currentPhraseIndex !== "undefined" ? currentPhraseIndex : null;
+
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+
+      rec.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        if (captureIndex !== null) {
+          if (phraseRecordings[captureIndex]) {
+            URL.revokeObjectURL(phraseRecordings[captureIndex]);
+          }
+          phraseRecordings[captureIndex] = URL.createObjectURL(blob);
+          markRecorded(captureIndex);
+          // インラインの録音再生ボタンも有効化
+          const item = document.querySelector(`.yts-phrase-item[data-index="${captureIndex}"]`);
+          if (item) {
+            const btn = item.querySelector(".yts-playrec-btn");
+            if (btn) btn.disabled = false;
+          }
+        }
+        stream.getTracks().forEach((t) => t.stop());
+        resolve();
+      };
+
+      rec.start();
+      setTimeout(() => {
+        if (rec.state === "recording") rec.stop();
+      }, durationMs);
+    } catch (err) {
+      resolve();
+    }
+  });
 }
+
+// リピーティングモード用: 自動再生
+function autoPlayRecording() {
+  return new Promise((resolve) => {
+    const idx = typeof currentPhraseIndex !== "undefined" ? currentPhraseIndex : null;
+    if (idx === null || !phraseRecordings[idx]) {
+      resolve();
+      return;
+    }
+    const audio = new Audio(phraseRecordings[idx]);
+    audio.onended = () => resolve();
+    audio.onerror = () => resolve();
+    audio.play().catch(() => resolve());
+  });
+}
+
+// 後方互換: initRecorderは空にする（下部ボタンは廃止）
+function initRecorder() {}
+
+// 後方互換
+function updatePlayRecBtn() {}
