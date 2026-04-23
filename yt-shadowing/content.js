@@ -59,17 +59,35 @@ async function fetchCaptions(videoId) {
   if (!track || !track.baseUrl) return null;
 
   try {
-    const xmlRes = await fetch(track.baseUrl + "&fmt=json3");
-    const data = await xmlRes.json();
-    return data.events
-      .filter((e) => e.segs)
-      .map((e) => ({
+    const url = track.baseUrl + "&fmt=json3";
+    log("caption fetch:", url);
+    const xmlRes = await fetch(url);
+    log("caption status:", xmlRes.status);
+    const text = await xmlRes.text();
+    log("caption length:", text.length, "preview:", text.slice(0, 300));
+    const data = JSON.parse(text);
+    const events = data.events || [];
+    log("events数:", events.length);
+
+    // ASR(自動字幕)のjson3はrolling形式 — 同じtStartMsで段々と単語を追加していく。
+    // 最終版（同じstartの最後のevent）だけを残す。手動字幕は素直なので同じロジックでOK。
+    const phrasesByStart = new Map();
+    for (const e of events) {
+      if (!e.segs || typeof e.tStartMs !== "number") continue;
+      const t = e.segs.map((s) => s.utf8 || "").join("").replace(/\n/g, " ").trim();
+      if (!t) continue;
+      phrasesByStart.set(e.tStartMs, {
         start: e.tStartMs / 1000,
-        duration: (e.dDurationMs || 0) / 1000,
-        end: (e.tStartMs + (e.dDurationMs || 0)) / 1000,
-        text: e.segs.map((s) => s.utf8 || "").join("").replace(/\n/g, " ").trim(),
-      }))
-      .filter((e) => e.text);
+        duration: (e.dDurationMs || 1500) / 1000,
+        end: (e.tStartMs + (e.dDurationMs || 1500)) / 1000,
+        text: t,
+      });
+    }
+    const phrases = Array.from(phrasesByStart.values()).sort(
+      (a, b) => a.start - b.start
+    );
+    log("生成phrase数:", phrases.length);
+    return phrases;
   } catch (e) {
     warn("字幕本体fetch失敗", e);
     return null;
@@ -142,6 +160,13 @@ function buildPanel(phrases, statusMessage) {
   document.getElementById("yts-replay").onclick = () => {
     if (currentPhrase) playPhrase(currentPhrase);
   };
+
+  // 録音は字幕の有無に関係なく使えるようにここで配線
+  if (typeof initRecorder === "function") {
+    initRecorder();
+  } else {
+    warn("initRecorderが未定義");
+  }
 }
 
 // =====================
@@ -220,11 +245,6 @@ async function init() {
 
   log("phrases取得:", phrases.length);
   buildPanel(phrases);
-  if (typeof initRecorder === "function") {
-    initRecorder();
-  } else {
-    warn("initRecorderが未定義");
-  }
 }
 
 // ページ遷移対応（YouTubeはSPA）
