@@ -231,30 +231,45 @@
   background: #252544;
 }
 
-/* リピーティングモード */
+/* モードボタン共通 */
 
-#yts-repeat-mode {
-  width: 100%;
-  padding: 10px;
+#yts-mode-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+#yts-repeat-mode,
+#yts-overlap-mode {
+  flex: 1;
+  padding: 10px 6px;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   background: #3A45C0;
   color: #fff;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: bold;
   transition: background 0.15s;
 }
 
-#yts-repeat-mode:hover {
+#yts-repeat-mode:hover,
+#yts-overlap-mode:hover {
   background: #4A55E0;
 }
 
-#yts-repeat-mode.active {
+#yts-repeat-mode:disabled,
+#yts-overlap-mode:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#yts-repeat-mode.active,
+#yts-overlap-mode.active {
   background: #E05050;
 }
 
-#yts-repeat-mode.active:hover {
+#yts-repeat-mode.active:hover,
+#yts-overlap-mode.active:hover {
   background: #C04040;
 }
 
